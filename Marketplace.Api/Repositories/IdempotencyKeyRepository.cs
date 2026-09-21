@@ -37,7 +37,7 @@ public class IdempotencyKeyRepository
         return result is null ? null : (int)result;
     }
 
-    public async Task<int?> FindByUserAndKeyASync(int userId, string idempotencyKey,
+    public async Task<int?> FindByUserAndKeyAsync(int userId, string idempotencyKey,
         CancellationToken cancellationToken)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -47,7 +47,7 @@ public class IdempotencyKeyRepository
         return await FindByUserAndKeyAsync(session, userId, idempotencyKey, cancellationToken);
     }
 
-    public async Task SaveASync(DbSession session, int userId, string idempotencyKey, int orderId,
+    public async Task SaveAsync(DbSession session, int userId, string idempotencyKey, int orderId,
         CancellationToken cancellationToken)
     {
         const string sql = """

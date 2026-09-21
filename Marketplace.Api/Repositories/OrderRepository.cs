@@ -523,7 +523,7 @@ public class OrderRepository
             // 3. Отменять можно только pending
             if (status != "pending")
             {
-                throw new OrderNotFoundException(orderId);
+                throw new OrderCannotBeCancelledException(orderId, status);
             }
 
             const string itemsSql = """

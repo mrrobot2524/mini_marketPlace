@@ -161,5 +161,9 @@ public class OrdersController : ControllerBase
         {
             return NotFound();
         }
+        catch (OrderCannotBeCancelledException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
     }
 }

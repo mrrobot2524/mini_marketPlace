@@ -6,14 +6,15 @@ namespace Marketplace.Api.Services;
 public class PendingOrderCancellationService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
-    
     private readonly RedisCacheService _cache;
+    private readonly ILogger<PendingOrderCancellationService> _logger;
 
     public PendingOrderCancellationService(
-        IServiceScopeFactory scopeFactory, RedisCacheService  cache)
+        IServiceScopeFactory scopeFactory, RedisCacheService  cache, ILogger<PendingOrderCancellationService> logger)
     {
         _scopeFactory = scopeFactory;
         _cache = cache;
+        _logger = logger;
     }
 
     protected override async Task ExecuteAsync(
@@ -46,15 +47,13 @@ public class PendingOrderCancellationService : BackgroundService
                         
                         await _cache.RemoveAsync(cacheKey.ToString());
                         
-                        Console.WriteLine(
-                            $"Order {orderId} was automatically cancelled.");
+                        _logger.LogInformation("Order {OrderId} was automatically cancelled.", orderId);
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine(
-                    $"Pending order cancellation error: {ex.Message}");
+                _logger.LogError(ex, "Pending order cancellation error.");
             }
 
             await Task.Delay(

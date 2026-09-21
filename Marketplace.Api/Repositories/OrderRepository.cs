@@ -45,7 +45,7 @@ public class OrderRepository
         const string sql = """
                                UPDATE orders
                                SET status = $1
-                               WHERE id = $2
+                               WHERE id = $2;
                            """;
         
         await using var command = new NpgsqlCommand(sql, session.Connection, session.Transaction);
@@ -230,7 +230,7 @@ public class OrderRepository
                            ) o 
                            LEFT JOIN order_items oi
                            ON oi.order_id = o.id
-                           ORDER BY o.created_at DESC, oi.id
+                           ORDER BY o.created_at DESC, oi.id;
                            """;
 
         var offset = (page -1) * pageSize;
@@ -291,19 +291,13 @@ public class OrderRepository
         return Convert.ToInt32(result);
     }
     
-    public async Task CancelOrderAsync(int orderId, int userId, CancellationToken cancellationToken)
+    public async Task CancelOrderAsync(
+        int orderId,
+        int userId,
+        CancellationToken cancellationToken)
     {
-        await using var connection =
-            await _dataSource.OpenConnectionAsync(cancellationToken);
-
-        await using var transaction =
-            await connection.BeginTransactionAsync(cancellationToken);
-
-        var session = new DbSession(connection, transaction);
-
-        try
+        await ExecuteInTransactionAsync(async (session, ct) =>
         {
-            // Получаем заказ и блокируем его
             const string lockSql = """
                                    SELECT status
                                    FROM orders
@@ -312,12 +306,13 @@ public class OrderRepository
                                    FOR UPDATE;
                                    """;
 
-            await using var lockCommand = new NpgsqlCommand(lockSql, session.Connection, session.Transaction);
-            
+            await using var lockCommand = new NpgsqlCommand(
+                lockSql, session.Connection, session.Transaction);
+
             lockCommand.Parameters.AddWithValue(orderId);
             lockCommand.Parameters.AddWithValue(userId);
-            
-            var status = (string?)await lockCommand.ExecuteScalarAsync(cancellationToken);
+
+            var status = (string?)await lockCommand.ExecuteScalarAsync(ct);
 
             if (status is null)
             {
@@ -326,8 +321,7 @@ public class OrderRepository
 
             if (status == "cancelled")
             {
-                await transaction.CommitAsync(cancellationToken);
-                return;
+                return;   // ← idempotent: уже отменён, выходим без значения
             }
 
             if (status != "pending")
@@ -335,31 +329,29 @@ public class OrderRepository
                 throw new OrderCannotBeCancelledException(orderId, status);
             }
 
-            var items = await _orderItemRepository.GetByOrderIdForUpdateAsync(session, orderId, cancellationToken);
+            var items = await _orderItemRepository
+                .GetByOrderIdForUpdateAsync(session, orderId, ct);
 
             foreach (var item in items)
             {
-                var product = await _productRepository.GetForUpdateAsync(session, item.ProductId, cancellationToken);
+                var product = await _productRepository
+                    .GetForUpdateAsync(session, item.ProductId, ct);
 
                 if (product is null)
                 {
                     throw new ProductNotFoundException(item.ProductId);
                 }
-                
+
                 var newStock = product.StockQuantity + item.Quantity;
-                
-                await _productRepository.UpdateStockAsync(session, item.ProductId, newStock, cancellationToken);
+
+                await _productRepository.UpdateStockAsync(
+                    session, product.Id, newStock, ct);
             }
-            
-            await UpdateStatusAsync(session, orderId, "cancelled", cancellationToken);
-            
-            await transaction.CommitAsync(cancellationToken);
-        }
-        catch
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            throw;
-        }
+
+            await UpdateStatusAsync(session, orderId, "cancelled", ct);
+        
+            // ← БЕЗ return userId; — лямбда просто завершается
+        }, cancellationToken);
     }
     
     public async Task<List<int>> GetExpiredPendingOrderIdsAsync(CancellationToken cancellationToken)
@@ -377,6 +369,8 @@ public class OrderRepository
 
         await using var command =
             new NpgsqlCommand(sql, connection);
+        
+        command.Parameters.AddWithValue(PendingOrderTimeoutMinutes);
 
         await using var reader =
             await command.ExecuteReaderAsync(cancellationToken);
@@ -393,37 +387,24 @@ public class OrderRepository
     
     public async Task<int?> CancelExpiredPendingOrderAsync(int orderId, CancellationToken cancellationToken)
     {
-        await using var connection =
-            await _dataSource.OpenConnectionAsync(cancellationToken);
-
-        await using var transaction =
-            await connection.BeginTransactionAsync(cancellationToken);
-        
-        var session = new DbSession(connection, transaction);
-
-        try
+        return await ExecuteInTransactionAsync<int?>(async (session, ct) =>
         {
             const string lockSql = """
-                                    SELECT user_id, status, created_at
-                                    FROM orders
-                                    WHERE id = $1
-                                    FOR UPDATE;
-                                    """;
+                                   SELECT user_id, status, created_at
+                                   FROM orders
+                                   WHERE id = $1
+                                   FOR UPDATE;
+                                   """;
 
-            await using var lockCommand =
-                new NpgsqlCommand(
-                    lockSql,
-                    session.Connection,
-                    session.Transaction);
+            await using var lockCommand = new NpgsqlCommand(
+                lockSql, session.Connection, session.Transaction);
 
             lockCommand.Parameters.AddWithValue(orderId);
 
-            await using var reader =
-                await lockCommand.ExecuteReaderAsync(cancellationToken);
+            await using var reader = await lockCommand.ExecuteReaderAsync(ct);
 
-            if (!await reader.ReadAsync(cancellationToken))
+            if (!await reader.ReadAsync(ct))
             {
-                await transaction.RollbackAsync(cancellationToken);
                 return null;
             }
 
@@ -435,44 +416,39 @@ public class OrderRepository
 
             if (status != "pending")
             {
-                await transaction.RollbackAsync(cancellationToken);
                 return null;
             }
 
             var timeoutThreshold = DateTime.UtcNow.AddMinutes(-PendingOrderTimeoutMinutes);
-            
+
             if (createdAt > timeoutThreshold)
             {
-                await transaction.RollbackAsync(cancellationToken);
                 return null;
             }
 
-            var items = await _orderItemRepository.GetByOrderIdForUpdateAsync(session, orderId, cancellationToken);
+            var items = await _orderItemRepository
+                .GetByOrderIdForUpdateAsync(session, orderId, ct);
 
             foreach (var item in items)
             {
-                var product = await _productRepository.GetForUpdateAsync(session, item.ProductId, cancellationToken);
+                var product = await _productRepository
+                    .GetForUpdateAsync(session, item.ProductId, ct);
 
                 if (product is null)
                 {
                     throw new ProductNotFoundException(item.ProductId);
                 }
-                
+
                 var newStock = product.StockQuantity + item.Quantity;
-                
-                await _productRepository.UpdateStockAsync(session, product.Id, newStock, cancellationToken);
+
+                await _productRepository.UpdateStockAsync(
+                    session, product.Id, newStock, ct);
             }
-            
-            await UpdateStatusAsync(session, orderId, "cancelled", cancellationToken);
-            
-            await transaction.CommitAsync(cancellationToken);
+
+            await UpdateStatusAsync(session, orderId, "cancelled", ct);
+
             return userId;
-        }
-        catch
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            throw;
-        }
+        }, cancellationToken);
     }
     
     
@@ -500,5 +476,54 @@ public class OrderRepository
             Quantity = reader.GetInt32(5),
             Price = reader.GetDecimal(6)
         };
+    }
+
+    private async Task ExecuteInTransactionAsync(
+        Func<DbSession, CancellationToken, Task> action,
+        CancellationToken cancellationToken)
+    {
+        await using var connection =
+            await _dataSource.OpenConnectionAsync(cancellationToken);
+
+        await using var transaction =
+            await connection.BeginTransactionAsync(cancellationToken);
+
+        var session = new DbSession(connection, transaction);
+
+        try
+        {
+            await action(session, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    private async Task<T> ExecuteInTransactionAsync<T>(
+        Func<DbSession, CancellationToken, Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        await using var connection =
+            await _dataSource.OpenConnectionAsync(cancellationToken);
+
+        await using var transaction =
+            await connection.BeginTransactionAsync(cancellationToken);
+
+        var session = new DbSession(connection, transaction);
+
+        try
+        {
+            var result = await action(session, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return result;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 }

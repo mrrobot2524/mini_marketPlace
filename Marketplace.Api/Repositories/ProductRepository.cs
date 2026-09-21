@@ -37,4 +37,61 @@ public class ProductRepository
             reader.GetInt32(3)
         );
     }
+    
+    public async Task<Product?> GetForUpdateAsync(
+        DbSession session,
+        int productId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+                           SELECT id, name, price, stock_quantity
+                           FROM products
+                           WHERE id = $1
+                           FOR UPDATE;
+                           """;
+
+        await using var command = new NpgsqlCommand(
+            sql,
+            session.Connection,
+            session.Transaction);
+
+        command.Parameters.AddWithValue(productId);
+
+        await using var reader =
+            await command.ExecuteReaderAsync(cancellationToken);
+
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new Product(
+            reader.GetInt32(0),
+            reader.GetString(1),
+            reader.GetDecimal(2),
+            reader.GetInt32(3));
+    }
+    
+    public async Task UpdateStockAsync(
+        DbSession session,
+        int productId,
+        int newStockQuantity,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+                           UPDATE products
+                           SET stock_quantity = $1
+                           WHERE id = $2;
+                           """;
+
+        await using var command = new NpgsqlCommand(
+            sql,
+            session.Connection,
+            session.Transaction);
+
+        command.Parameters.AddWithValue(newStockQuantity);
+        command.Parameters.AddWithValue(productId);
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
 }

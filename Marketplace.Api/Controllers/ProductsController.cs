@@ -27,12 +27,7 @@ public class ProductsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create(CreateProductRequest request)
     {
-        var product = new Product
-        {
-            Name = request.Name,
-            Price = request.Price,
-            StockQuantity = request.StockQuantity
-        };
+        var product = new Product(0, request.Name, request.Price, request.StockQuantity);
         
         var createProduct = await _productService.CreateAsync(product);
         return Ok(createProduct);

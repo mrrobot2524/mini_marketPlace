@@ -30,11 +30,11 @@ public class ProductRepository
         await reader.ReadAsync();
 
         return new Product
-        {
-            Id = reader.GetInt32(0),
-            Name = reader.GetString(1),
-            Price = reader.GetDecimal(2),
-            StockQuantity = reader.GetInt32(3)
-        };
+        (
+            reader.GetInt32(0),
+            reader.GetString(1),
+            reader.GetDecimal(2),
+            reader.GetInt32(3)
+        );
     }
 }

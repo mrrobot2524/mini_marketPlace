@@ -1,3 +1,4 @@
+using Marketplace.Api.Models;
 using Marketplace.Api.Repositories;
 
 namespace Marketplace.Api.Services;
@@ -41,9 +42,9 @@ public class PendingOrderCancellationService : BackgroundService
 
                     if (userId.HasValue)
                     {
-                        var cacheKey = $"order:{userId.Value}:{orderId}";
+                        var cacheKey = new OrderCacheKey(userId.Value,  orderId);
                         
-                        await _cache.RemoveAsync(cacheKey);
+                        await _cache.RemoveAsync(cacheKey.ToString());
                         
                         Console.WriteLine(
                             $"Order {orderId} was automatically cancelled.");

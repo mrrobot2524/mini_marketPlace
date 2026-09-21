@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Marketplace.Api.DTOs;
+using Marketplace.Api.Models;
 using Marketplace.Api.Repositories;
 
 namespace Marketplace.Api.Services;
@@ -34,9 +35,9 @@ public class OrderService
         int userId,
         CancellationToken cancellationToken)
     {
-        var cacheKey = $"order:{userId}:{orderId}";
+        var cacheKey = new OrderCacheKey(userId, orderId);
 
-        var cachedOrder = await _cache.GetAsync(cacheKey);
+        var cachedOrder = await _cache.GetAsync(cacheKey.ToString());
 
         if (cachedOrder is not null)
         {
@@ -58,7 +59,7 @@ public class OrderService
         var json = JsonSerializer.Serialize(order);
 
         await _cache.SetAsync(
-            cacheKey,
+            cacheKey.ToString(),
             json,
             TimeSpan.FromMinutes(5));
 
@@ -104,8 +105,8 @@ public class OrderService
             userId,
             cancellationToken);
 
-        var cacheKey = $"order:{userId}:{orderId}";
+        var cacheKey = new OrderCacheKey(userId, orderId);
 
-        await _cache.RemoveAsync(cacheKey);
+        await _cache.RemoveAsync(cacheKey.ToString());
     }
 }

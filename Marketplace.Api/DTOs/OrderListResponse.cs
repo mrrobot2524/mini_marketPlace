@@ -1,14 +1,14 @@
 namespace Marketplace.Api.DTOs;
 
-public class OrderListResponse
+public record OrderListResponse
 {
-    public List<OrderResponse> Items { get; set; } = new();
+    public List<OrderResponse> Items { get; init; } = new();
     
-    public int Page  { get; set; }
+    public int Page  { get; init; }
     
-    public int PageSize { get; set; }
+    public int PageSize { get; init; }
     
-    public int TotalCount { get; set; }
+    public int TotalCount { get; init; }
     
-    public int TotalPages { get; set; }
+    public int TotalPages { get; init; }
 }

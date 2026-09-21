@@ -1,23 +1,23 @@
 namespace Marketplace.Api.DTOs;
 
-public class OrderResponse
+public record OrderResponse
 {
-    public int Id { get; set; }
+    public int Id { get; init; }
 
-    public int UserId { get; set; }
+    public int UserId { get; init; }
 
-    public string Status { get; set; } = string.Empty;
+    public string Status { get; init; } = string.Empty;
 
-    public DateTime CreatedAt { get; set; }
+    public DateTime CreatedAt { get; init; }
 
-    public List<OrderItemResponse> Items { get; set; } = new();
+    public List<OrderItemResponse> Items { get; } = new();
 }
 
-public class OrderItemResponse
+public record OrderItemResponse
 {
-    public int ProductId { get; set; }
+    public int ProductId { get; init; }
 
-    public int Quantity { get; set; }
+    public int Quantity { get; init; }
 
-    public decimal Price { get; set; }
+    public decimal Price { get; init; }
 }

@@ -193,25 +193,13 @@ public class OrderRepository
 
         while (await reader.ReadAsync(cancellationToken))
         {
-            if (order is null)
-            {
-                order = new OrderResponse
-                {
-                    Id = reader.GetInt32(0),
-                    UserId = reader.GetInt32(1),
-                    Status = reader.GetString(2),
-                    CreatedAt = reader.GetDateTime(3)
-                };
-            }
+            order ??= ReadOrder(reader);
 
-            if (!reader.IsDBNull(4))
+            var item = ReadOrderItem(reader);
+
+            if (item is not null)
             {
-                order.Items.Add(new OrderItemResponse
-                {
-                    ProductId = reader.GetInt32(4),
-                    Quantity = reader.GetInt32(5),
-                    Price = reader.GetDecimal(6)
-                });
+                order.Items.Add(item);
             }
         }
 
@@ -267,25 +255,15 @@ public class OrderRepository
 
             if (currentOrder is null || currentOrder.Id != orderId)
             {
-                currentOrder = new OrderResponse
-                {
-                    Id = orderId,
-                    UserId = reader.GetInt32(1),
-                    Status = reader.GetString(2),
-                    CreatedAt = reader.GetDateTime(3)
-                };
-
+                currentOrder = ReadOrder(reader);
                 orders.Add(currentOrder);
             }
 
-            if (!reader.IsDBNull(4))
+            var item = ReadOrderItem(reader);
+            
+            if (item is not null)
             {
-                currentOrder.Items.Add(new OrderItemResponse
-                {
-                    ProductId = reader.GetInt32(4),
-                    Quantity = reader.GetInt32(5),
-                    Price = reader.GetDecimal(6)
-                });
+                currentOrder.Items.Add(item);
             }
         }
 
@@ -365,7 +343,7 @@ public class OrderRepository
 
                 if (product is null)
                 {
-                    throw new InvalidOperationException($"Product with id {item.ProductId}  not found.");
+                    throw new ProductNotFoundException(item.ProductId);
                 }
                 
                 var newStock = product.StockQuantity + item.Quantity;
@@ -393,7 +371,7 @@ public class OrderRepository
                            SELECT id
                            FROM orders
                            WHERE status = 'pending'
-                             AND created_at <= NOW() - INTERVAL '15 minutes'
+                             AND created_at <= NOW() - make_interval(mins => $1)
                            ORDER BY id;
                            """;
 
@@ -414,86 +392,113 @@ public class OrderRepository
     }
     
     public async Task<int?> CancelExpiredPendingOrderAsync(int orderId, CancellationToken cancellationToken)
-{
-    await using var connection =
-        await _dataSource.OpenConnectionAsync(cancellationToken);
-
-    await using var transaction =
-        await connection.BeginTransactionAsync(cancellationToken);
-    
-    var session = new DbSession(connection, transaction);
-
-    try
     {
-        const string lockSql = """
-                                SELECT user_id, status, created_at
-                                FROM orders
-                                WHERE id = $1
-                                FOR UPDATE;
-                                """;
+        await using var connection =
+            await _dataSource.OpenConnectionAsync(cancellationToken);
 
-        await using var lockCommand =
-            new NpgsqlCommand(
-                lockSql,
-                session.Connection,
-                session.Transaction);
-
-        lockCommand.Parameters.AddWithValue(orderId);
-
-        await using var reader =
-            await lockCommand.ExecuteReaderAsync(cancellationToken);
-
-        if (!await reader.ReadAsync(cancellationToken))
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return null;
-        }
-
-        var userId = reader.GetInt32(0);
-        var status = reader.GetString(1);
-        var createdAt = reader.GetFieldValue<DateTime>(2);
-
-        await reader.CloseAsync();
-
-        if (status != "pending")
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return null;
-        }
-
-        var timeoutThreshold = DateTime.UtcNow.AddMinutes(-PendingOrderTimeoutMinutes);
+        await using var transaction =
+            await connection.BeginTransactionAsync(cancellationToken);
         
-        if (createdAt > timeoutThreshold)
+        var session = new DbSession(connection, transaction);
+
+        try
         {
-            await transaction.RollbackAsync(cancellationToken);
-            return null;
-        }
+            const string lockSql = """
+                                    SELECT user_id, status, created_at
+                                    FROM orders
+                                    WHERE id = $1
+                                    FOR UPDATE;
+                                    """;
 
-        var items = await _orderItemRepository.GetByOrderIdForUpdateAsync(session, orderId, cancellationToken);
+            await using var lockCommand =
+                new NpgsqlCommand(
+                    lockSql,
+                    session.Connection,
+                    session.Transaction);
 
-        foreach (var item in items)
-        {
-            var product = await _productRepository.GetForUpdateAsync(session, item.ProductId, cancellationToken);
+            lockCommand.Parameters.AddWithValue(orderId);
 
-            if (product is null)
+            await using var reader =
+                await lockCommand.ExecuteReaderAsync(cancellationToken);
+
+            if (!await reader.ReadAsync(cancellationToken))
             {
-                throw new ProductNotFoundException(item.ProductId);
+                await transaction.RollbackAsync(cancellationToken);
+                return null;
+            }
+
+            var userId = reader.GetInt32(0);
+            var status = reader.GetString(1);
+            var createdAt = reader.GetFieldValue<DateTime>(2);
+
+            await reader.CloseAsync();
+
+            if (status != "pending")
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return null;
+            }
+
+            var timeoutThreshold = DateTime.UtcNow.AddMinutes(-PendingOrderTimeoutMinutes);
+            
+            if (createdAt > timeoutThreshold)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return null;
+            }
+
+            var items = await _orderItemRepository.GetByOrderIdForUpdateAsync(session, orderId, cancellationToken);
+
+            foreach (var item in items)
+            {
+                var product = await _productRepository.GetForUpdateAsync(session, item.ProductId, cancellationToken);
+
+                if (product is null)
+                {
+                    throw new ProductNotFoundException(item.ProductId);
+                }
+                
+                var newStock = product.StockQuantity + item.Quantity;
+                
+                await _productRepository.UpdateStockAsync(session, product.Id, newStock, cancellationToken);
             }
             
-            var newStock = product.StockQuantity + item.Quantity;
+            await UpdateStatusAsync(session, orderId, "cancelled", cancellationToken);
             
-            await _productRepository.UpdateStockAsync(session, product.Id, newStock, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return userId;
         }
-        
-        await UpdateStatusAsync(session, orderId, "cancelled", cancellationToken);
-        
-        await transaction.CommitAsync(cancellationToken);
-        return userId;
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
-    catch
+    
+    
+    private static OrderResponse ReadOrder(NpgsqlDataReader reader)
     {
-        await transaction.RollbackAsync(cancellationToken);
-        throw;
+        return new OrderResponse
+        {
+            Id = reader.GetInt32(0),
+            UserId = reader.GetInt32(1),
+            Status = reader.GetString(2),
+            CreatedAt = reader.GetDateTime(3)
+        };
     }
-}
+
+    private static OrderItemResponse? ReadOrderItem(NpgsqlDataReader reader)
+    {
+        if (reader.IsDBNull(4))
+        {
+            return null;
+        }
+
+        return new OrderItemResponse
+        {
+            ProductId = reader.GetInt32(4),
+            Quantity = reader.GetInt32(5),
+            Price = reader.GetDecimal(6)
+        };
+    }
 }

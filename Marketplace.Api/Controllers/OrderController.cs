@@ -64,7 +64,8 @@ public class OrdersController : ControllerBase
             var orderId = await _orderService.CreateOrderAsync(
                 userId.Value,
                 idempotencyKey,
-                request);
+                request,
+                HttpContext.RequestAborted);
 
             return Ok(new
             {
@@ -151,7 +152,7 @@ public class OrdersController : ControllerBase
 
         try
         {
-            await _orderService.CancelOrderAsync(id, userId.Value);
+            await _orderService.CancelOrderAsync(id, userId.Value, HttpContext.RequestAborted);
             return Ok(new
             {
                 message = "Order cancelled successfully"

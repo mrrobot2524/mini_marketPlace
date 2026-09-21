@@ -51,6 +51,8 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+builder.Services.AddScoped<IdempotencyKeyRepository>();
+builder.Services.AddScoped<OrderItemRepository>();
 builder.Services.AddScoped<ProductRepository>();
 builder.Services.AddScoped<OrderRepository>();
 builder.Services.AddScoped<ProductService>();

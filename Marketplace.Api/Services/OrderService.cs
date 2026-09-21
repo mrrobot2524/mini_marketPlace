@@ -18,12 +18,15 @@ public class OrderService
     public async Task<int> CreateOrderAsync(
         int userId,
         string idempotencyKey,
-        CreateOrderRequest request)
+        CreateOrderRequest request,
+        CancellationToken cancellationToken
+        )
     {
         return await _orderRepository.CreateOrderAsync(
             userId,
             idempotencyKey,
-            request.Items);
+            request.Items, 
+            cancellationToken);
     }
 
     public async Task<OrderResponse?> GetOrderByIdAsync(
@@ -93,11 +96,13 @@ public class OrderService
 
     public async Task CancelOrderAsync(
         int orderId,
-        int userId)
+        int userId,
+        CancellationToken cancellationToken)
     {
         await _orderRepository.CancelOrderAsync(
             orderId,
-            userId);
+            userId,
+            cancellationToken);
 
         var cacheKey = $"order:{userId}:{orderId}";
 

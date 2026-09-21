@@ -8,10 +8,16 @@ namespace Marketplace.Api.Repositories;
 public class OrderRepository
 {
     private readonly NpgsqlDataSource _dataSource;
+    private readonly IdempotencyKeyRepository _idempotencyKeyRepository;
+    private readonly OrderItemRepository _orderItemRepository;
+    private readonly ProductRepository _productRepository;
 
-    public OrderRepository(NpgsqlDataSource dataSource)
+    public OrderRepository(NpgsqlDataSource dataSource, IdempotencyKeyRepository idempotencyKeyRepository, OrderItemRepository orderItemRepository, ProductRepository productRepository)
     {
         _dataSource = dataSource;
+        _idempotencyKeyRepository = idempotencyKeyRepository;
+        _orderItemRepository = orderItemRepository;
+        _productRepository = productRepository;
     }
 
     public async Task<int?> FindExistingOrderAsync(
@@ -122,10 +128,7 @@ public class OrderRepository
         await command.ExecuteNonQueryAsync();
     }
 
-    public async Task<int> InsertOrderAsync(
-        NpgsqlConnection connection,
-        NpgsqlTransaction transaction,
-        int userId)
+    public async Task<int> InsertAsync(DbSession session, int userId, CancellationToken cancellationToken)
     {
         const string sql = """
                            INSERT INTO orders (user_id, status)
@@ -133,14 +136,32 @@ public class OrderRepository
                            RETURNING id;
                            """;
 
-        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        await using var command = new NpgsqlCommand(sql, session.Connection, session.Transaction);
 
         command.Parameters.AddWithValue(userId);
 
-        var result = await command.ExecuteScalarAsync();
+        var result = await command.ExecuteScalarAsync(cancellationToken);
 
         return (int)result!;
     }
+
+    public async Task UpdateStatusAsync(DbSession session, int orderId, string newStatus,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+                               UPDATE orders
+                               SET status = $1
+                               WHERE id = $2
+                           """;
+        
+        await using var command = new NpgsqlCommand(sql, session.Connection, session.Transaction);
+
+        command.Parameters.AddWithValue(newStatus);
+        command.Parameters.AddWithValue(orderId);
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+    
     
     public async Task CreateOrderItemAsync(
         NpgsqlConnection connection,
@@ -194,35 +215,34 @@ public class OrderRepository
     public async Task<int> CreateOrderAsync(
         int userId,
         string idempotencyKey,
-        List<CreateOrderItemRequest> items)
+        List<CreateOrderItemRequest> items,
+        CancellationToken cancellationToken
+        )
     {
         await using var connection =
-            await _dataSource.OpenConnectionAsync();
+            await _dataSource.OpenConnectionAsync(cancellationToken);
 
         await using var transaction =
-            await connection.BeginTransactionAsync();
+            await connection.BeginTransactionAsync(cancellationToken);
+
+        var session = new DbSession(connection, transaction);
 
         try
         {
-            // 1. Проверяем Idempotency-Key
-            var existingOrderId = await FindExistingOrderAsync(
-                connection,
-                transaction,
-                userId,
-                idempotencyKey);
+            // Проверяем Idempotency-Key
+            var existingOrderId =
+                await _idempotencyKeyRepository.FindByUserAndKeyAsync(session, userId, idempotencyKey,
+                    cancellationToken);
 
             if (existingOrderId.HasValue)
             {
-                await transaction.CommitAsync();
+                await transaction.CommitAsync(cancellationToken);
 
                 return existingOrderId.Value;
             }
 
-            // 2. Создаём заказ
-            var orderId = await InsertOrderAsync(
-                connection,
-                transaction,
-                userId);
+            // Создаём заказ
+            var orderId = await InsertAsync(session, userId, cancellationToken);
 
             var quantitiesByProduct = new Dictionary<int, int>();
 
@@ -238,25 +258,15 @@ public class OrderRepository
                 }
             }
 
-            var mergedItems = new List<CreateOrderItemRequest>();
-
-            foreach (var pair in quantitiesByProduct)
+            var mergedItems = quantitiesByProduct.Select(pair => new CreateOrderItemRequest
             {
-                mergedItems.Add(new CreateOrderItemRequest
-                {
-                    ProductId = pair.Key,
-                    Quantity = pair.Value
-                });
-            }
-            
-            mergedItems.Sort((a,b) => a.ProductId.CompareTo(b.ProductId));
-            
+                ProductId = pair.Key,
+                Quantity = pair.Value
+            }).OrderBy(x => x.ProductId).ToList();
+
             foreach (var item in mergedItems)
             {
-                var product = await GetProductForUpdateAsync(
-                    connection,
-                    transaction,
-                    item.ProductId);
+                var product = await _productRepository.GetForUpdateAsync(session, item.ProductId, cancellationToken);
 
                 if (product is null)
                 {
@@ -268,43 +278,28 @@ public class OrderRepository
                     throw new InsufficientStockException(item.ProductId);
                 }
 
-                var newStockQuantity =
-                    product.StockQuantity - item.Quantity;
+                var newStockQuantity = product.StockQuantity - item.Quantity;
+                
+                await _productRepository.UpdateStockAsync(session, product.Id, newStockQuantity, cancellationToken);
 
-                await UpdateStockAsync(
-                    connection,
-                    transaction,
-                    product.Id,
-                    newStockQuantity);
-
-                await CreateOrderItemAsync(
-                    connection,
-                    transaction,
-                    orderId,
-                    product.Id,
-                    item.Quantity,
-                    product.Price);
+                await _orderItemRepository.CreateAsync(session, orderId, product.Id, item.Quantity, product.Price,
+                    cancellationToken);
             }
             
-            await SaveIdempotencyKeyAsync(
-                connection,
-                transaction,
-                userId,
-                idempotencyKey,
-                orderId);
-
-            await transaction.CommitAsync();
-
+            await _idempotencyKeyRepository.SaveASync(session, userId, idempotencyKey, orderId,  cancellationToken);
+            
+            await transaction.CommitAsync(cancellationToken);
+            
             return orderId;
         }
         catch (PostgresException ex)
             when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
         {
-            await transaction.RollbackAsync();
+            await transaction.RollbackAsync(cancellationToken);
 
-            var existingOrderId = await FindExistingOrderAsync(
-                userId,
-                idempotencyKey);
+            var existingOrderId =
+                await _idempotencyKeyRepository.FindByUserAndKeyASync(userId, idempotencyKey,
+                    cancellationToken);
 
             if (existingOrderId.HasValue)
             {
@@ -315,7 +310,7 @@ public class OrderRepository
         }
         catch
         {
-            await transaction.RollbackAsync();
+            await transaction.RollbackAsync(cancellationToken);
             throw;
         }
     }
@@ -474,158 +469,73 @@ public class OrderRepository
         return Convert.ToInt32(result);
     }
     
-    public async Task CancelOrderAsync(int orderId, int userId)
+    public async Task CancelOrderAsync(int orderId, int userId, CancellationToken cancellationToken)
     {
         await using var connection =
-            await _dataSource.OpenConnectionAsync();
+            await _dataSource.OpenConnectionAsync(cancellationToken);
 
         await using var transaction =
-            await connection.BeginTransactionAsync();
+            await connection.BeginTransactionAsync(cancellationToken);
+
+        var session = new DbSession(connection, transaction);
 
         try
         {
-            // 1. Получаем заказ и блокируем его
-            const string orderSql = """
-                                    SELECT status
-                                    FROM orders
-                                    WHERE id = $1
-                                      AND user_id = $2
-                                    FOR UPDATE;
-                                    """;
+            // Получаем заказ и блокируем его
+            const string lockSql = """
+                                   SELECT status
+                                   FROM orders
+                                   WHERE id = $1
+                                     AND user_id = $2
+                                   FOR UPDATE;
+                                   """;
 
-            await using var orderCommand =
-                new NpgsqlCommand(
-                    orderSql,
-                    connection,
-                    transaction);
+            await using var lockCommand = new NpgsqlCommand(lockSql, session.Connection, session.Transaction);
+            
+            lockCommand.Parameters.AddWithValue(orderId);
+            lockCommand.Parameters.AddWithValue(userId);
+            
+            var status = (string?)await lockCommand.ExecuteScalarAsync(cancellationToken);
 
-            orderCommand.Parameters.AddWithValue(orderId);
-            orderCommand.Parameters.AddWithValue(userId);
-
-            var result =
-                await orderCommand.ExecuteScalarAsync();
-
-            if (result is null)
+            if (status is null)
             {
                 throw new OrderNotFoundException(orderId);
             }
 
-            var status = (string)result;
-
-            // 2. Если заказ уже cancelled —
-            // ничего больше не делаем
-            if (status == "cancelled")
+            if (status != "cancelled")
             {
-                await transaction.CommitAsync();
+                await transaction.CommitAsync(cancellationToken);
                 return;
             }
 
-            // 3. Отменять можно только pending
             if (status != "pending")
             {
                 throw new OrderCannotBeCancelledException(orderId, status);
             }
 
-            const string itemsSql = """
-                                    SELECT product_id, quantity
-                                    FROM order_items
-                                    WHERE order_id = $1
-                                    ORDER BY product_id;
-                                    """;
+            var items = await _orderItemRepository.GetByOrderIdForUpdateAsync(session, orderId, cancellationToken);
 
-            await using var itemsCommand =
-                new NpgsqlCommand(
-                    itemsSql,
-                    connection,
-                    transaction);
-
-            itemsCommand.Parameters.AddWithValue(orderId);
-
-            await using var reader =
-                await itemsCommand.ExecuteReaderAsync();
-
-            var items = new List<(int ProductId, int Quantity)>();
-
-            while (await reader.ReadAsync())
-            {
-                items.Add((
-                    reader.GetInt32(0),
-                    reader.GetInt32(1)
-                ));
-            }
-
-            await reader.DisposeAsync();
-            
             foreach (var item in items)
             {
-                const string productSql = """
-                                          SELECT stock_quantity
-                                          FROM products
-                                          WHERE id = $1
-                                          FOR UPDATE;
-                                          """;
+                var product = await _productRepository.GetForUpdateAsync(session, item.ProductId, cancellationToken);
 
-                await using var productCommand =
-                    new NpgsqlCommand(
-                        productSql,
-                        connection,
-                        transaction);
-
-                productCommand.Parameters.AddWithValue(item.ProductId);
-
-                var res =
-                    await productCommand.ExecuteScalarAsync();
-
-                if (res is null)
+                if (product is null)
                 {
-                    throw new InvalidOperationException(
-                        $"Product {item.ProductId} not found.");
+                    throw new InvalidOperationException($"Product with id {item.ProductId}  not found.");
                 }
-
-                var currentStock = (int)res;
-
-                var newStock =
-                    currentStock + item.Quantity;
-
-                const string updateSql = """
-                                         UPDATE products
-                                         SET stock_quantity = $1
-                                         WHERE id = $2;
-                                         """;
-
-                await using var updateCommand =
-                    new NpgsqlCommand(
-                        updateSql,
-                        connection,
-                        transaction);
-
-                updateCommand.Parameters.AddWithValue(newStock);
-                updateCommand.Parameters.AddWithValue(item.ProductId);
-
-                await updateCommand.ExecuteNonQueryAsync();
+                
+                var newStock = product.StockQuantity + item.Quantity;
+                
+                await _productRepository.UpdateStockAsync(session, item.ProductId, newStock, cancellationToken);
             }
             
-            const string updateOrderSql = """
-                                          UPDATE orders
-                                          SET status = 'cancelled'
-                                          WHERE id = $1;
-                                          """;
-
-            await using var updateOrderCommand =
-                new NpgsqlCommand(
-                    updateOrderSql,
-                    connection,
-                    transaction);
-
-            updateOrderCommand.Parameters.AddWithValue(orderId);
-
-            await updateOrderCommand.ExecuteNonQueryAsync();
-
-            await transaction.CommitAsync();
+            await UpdateStatusAsync(session, orderId, "canceled", cancellationToken);
+            
+            await transaction.CommitAsync(cancellationToken);
         }
         catch
         {
-            await transaction.RollbackAsync();
+            await transaction.RollbackAsync(cancellationToken);
             throw;
         }
     }

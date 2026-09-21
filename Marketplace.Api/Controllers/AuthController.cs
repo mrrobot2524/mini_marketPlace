@@ -10,6 +10,13 @@ namespace Marketplace.Api.Controllers;
 [Route("auth")]
 public class AuthController : ControllerBase
 {
+    private readonly IConfiguration _configuration;
+
+    public AuthController(IConfiguration configuration)
+    {
+        _configuration = configuration;
+    }
+    
     [HttpPost("login")]
     public IActionResult Login(int userId)
     {
@@ -19,7 +26,7 @@ public class AuthController : ControllerBase
         };
 
         var key = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes("super-secret-key-for-marketplace-12345"));
+            Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]!));
 
         var credentials = new SigningCredentials(
             key,
@@ -39,8 +46,3 @@ public class AuthController : ControllerBase
         });
     }
 }
-
-
-/*{
-"token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJodHRwOi8vc2NoZW1hcy54bWxzb2FwLm9yZy93cy8yMDA1LzA1L2lkZW50aXR5L2NsYWltcy9uYW1laWRlbnRpZmllciI6IjEiLCJleHAiOjE3ODk4NDk3NzR9.JNhQKVg1iLSqUePzrAtqqU20gUuJYwjGgpRRVCx3RFI"
-}*/

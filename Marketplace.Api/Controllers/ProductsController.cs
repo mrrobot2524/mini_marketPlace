@@ -2,10 +2,8 @@ using Marketplace.Api.DTOs;
 using Marketplace.Api.Models;
 using Marketplace.Api.Services;
 using Microsoft.AspNetCore.Mvc;
-using Npgsql;
 
 namespace Marketplace.Api.Controllers;
-
 
 [ApiController]
 [Route("api/[controller]")]
@@ -17,28 +15,111 @@ public class ProductsController : ControllerBase
     {
         _productService = productService;
     }
-    
+
     [HttpGet]
-    public IActionResult Get()
+    public async Task<IActionResult> GetList(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10,
+        CancellationToken cancellationToken = default)
     {
-        return Ok("Products endpoint works!");
+        if (page < 1)
+        {
+            return BadRequest(new
+            {
+                message = "Page must be greater than or equal to 1."
+            });
+        }
+
+        if (pageSize < 1 || pageSize > 100)
+        {
+            return BadRequest(new
+            {
+                message = "PageSize must be between 1 and 100."
+            });
+        }
+
+        var result = await _productService
+            .GetListAsync(page, pageSize, cancellationToken);
+
+        return Ok(result);
+    }
+
+    [HttpGet("{id:int}")]
+    public async Task<IActionResult> GetById(int id, CancellationToken cancellationToken)
+    {
+        var product = await _productService
+            .GetByIdAsync(id, cancellationToken);
+
+        if (product is null)
+        {
+            return NotFound(new { message = $"Product {id} not found." });
+        }
+
+        return Ok(product);
     }
 
     [HttpPost]
-    public async Task<IActionResult> Create(CreateProductRequest request)
+    public async Task<IActionResult> Create(
+        CreateProductRequest request,
+        CancellationToken cancellationToken)
     {
-        var product = new Product(0, request.Name, request.Price, request.StockQuantity);
-        
-        var createProduct = await _productService.CreateAsync(product);
-        return Ok(createProduct);
+        try
+        {
+            var product = new Product(
+                0,
+                request.Name,
+                request.Price,
+                request.StockQuantity);
+
+            var created = await _productService
+                .CreateAsync(product, cancellationToken);
+
+            return CreatedAtAction(
+                nameof(GetById),
+                new { id = created.Id },
+                created);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
-    [HttpGet("database-test")]
-    public async Task<IActionResult> DatabaseTest()
+    [HttpPut("{id:int}")]
+    public async Task<IActionResult> Update(
+        int id,
+        UpdateProductRequest request,
+        CancellationToken cancellationToken)
     {
-        var connectionString = "Host=localhost;Port=5432;Database=marketplace;Username=postgres;Password=123456";
+        try
+        {
+            var updated = await _productService
+                .UpdateAsync(id, request, cancellationToken);
 
-        await using var connection = new NpgsqlConnection(connectionString);
-        return Ok("PostgreSQL connection test works!");
+            if (!updated)
+            {
+                return NotFound(new { message = $"Product {id} not found." });
+            }
+
+            return NoContent();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
+    {
+        var deleted = await _productService
+            .DeleteAsync(id, cancellationToken);
+
+        if (!deleted)
+        {
+            return NotFound(new { message = $"Product {id} not found." });
+        }
+
+        return NoContent();
     }
 }

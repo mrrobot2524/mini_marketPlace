@@ -1,10 +1,12 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using HealthChecks.UI.Client;
 using Marketplace.Api.Exceptions;
 using Marketplace.Api.Options;
 using Marketplace.Api.Repositories;
 using Marketplace.Api.Services;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 using Npgsql;
@@ -120,6 +122,17 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(
 
 builder.Services.AddHostedService<PendingOrderCancellationService>();
 
+// === Health Checks ===
+builder.Services.AddHealthChecks()
+    .AddNpgSql(
+        postgresOptions.DefaultConnection,
+        name: "postgres",
+        tags: new[] { "db", "postgres" })
+    .AddRedis(
+        redisOptions.ConnectionString,
+        name: "redis",
+        tags: new[] { "cache", "redis" });
+
 var app = builder.Build();
 _ = app.Services.GetRequiredService<IOptions<JwtOptions>>().Value;
 app.UseExceptionHandler();
@@ -134,5 +147,10 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse
+});
 
 app.Run();

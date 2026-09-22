@@ -1,6 +1,7 @@
 using Marketplace.Api.DTOs;
 using Marketplace.Api.Exceptions;
 using Marketplace.Api.Models;
+using Marketplace.Api.Repositories.Converters;
 using Npgsql;
 
 namespace Marketplace.Api.Repositories;
@@ -13,55 +14,66 @@ public class OrderRepository
     private readonly ProductRepository _productRepository;
     private const int PendingOrderTimeoutMinutes = 15;
 
-    public OrderRepository(NpgsqlDataSource dataSource, IdempotencyKeyRepository idempotencyKeyRepository, OrderItemRepository orderItemRepository, ProductRepository productRepository)
+    public OrderRepository(
+        NpgsqlDataSource dataSource,
+        IdempotencyKeyRepository idempotencyKeyRepository,
+        OrderItemRepository orderItemRepository,
+        ProductRepository productRepository)
     {
         _dataSource = dataSource;
         _idempotencyKeyRepository = idempotencyKeyRepository;
         _orderItemRepository = orderItemRepository;
         _productRepository = productRepository;
     }
-    
 
-    public async Task<int> InsertAsync(DbSession session, int userId, CancellationToken cancellationToken)
+    public async Task<int> InsertAsync(
+        DbSession session,
+        int userId,
+        CancellationToken cancellationToken)
     {
         const string sql = """
                            INSERT INTO orders (user_id, status)
-                           VALUES ($1, 'pending')
+                           VALUES ($1, $2)
                            RETURNING id;
                            """;
 
-        await using var command = new NpgsqlCommand(sql, session.Connection, session.Transaction);
+        await using var command = new NpgsqlCommand(
+            sql, session.Connection, session.Transaction);
 
         command.Parameters.AddWithValue(userId);
+        command.Parameters.AddWithValue(OrderStatus.Pending.ToDbString());
 
         var result = await command.ExecuteScalarAsync(cancellationToken);
 
         return (int)result!;
     }
 
-    public async Task UpdateStatusAsync(DbSession session, int orderId, string newStatus,
+    public async Task UpdateStatusAsync(
+        DbSession session,
+        int orderId,
+        OrderStatus newStatus,
         CancellationToken cancellationToken)
     {
         const string sql = """
-                               UPDATE orders
-                               SET status = $1
-                               WHERE id = $2;
+                           UPDATE orders
+                           SET status = $1
+                           WHERE id = $2;
                            """;
-        
-        await using var command = new NpgsqlCommand(sql, session.Connection, session.Transaction);
 
-        command.Parameters.AddWithValue(newStatus);
+        await using var command = new NpgsqlCommand(
+            sql, session.Connection, session.Transaction);
+
+        command.Parameters.AddWithValue(newStatus.ToDbString());
         command.Parameters.AddWithValue(orderId);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
-    
+
     public async Task<int> CreateOrderAsync(
         int userId,
         string idempotencyKey,
         List<CreateOrderItemRequest> items,
-        CancellationToken cancellationToken
-        )
+        CancellationToken cancellationToken)
     {
         await using var connection =
             await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -73,19 +85,15 @@ public class OrderRepository
 
         try
         {
-            // Проверяем Idempotency-Key
-            var existingOrderId =
-                await _idempotencyKeyRepository.FindByUserAndKeyAsync(session, userId, idempotencyKey,
-                    cancellationToken);
+            var existingOrderId = await _idempotencyKeyRepository
+                .FindByUserAndKeyAsync(session, userId, idempotencyKey, cancellationToken);
 
             if (existingOrderId.HasValue)
             {
                 await transaction.CommitAsync(cancellationToken);
-
                 return existingOrderId.Value;
             }
 
-            // Создаём заказ
             var orderId = await InsertAsync(session, userId, cancellationToken);
 
             var quantitiesByProduct = new Dictionary<int, int>();
@@ -102,15 +110,19 @@ public class OrderRepository
                 }
             }
 
-            var mergedItems = quantitiesByProduct.Select(pair => new CreateOrderItemRequest
-            {
-                ProductId = pair.Key,
-                Quantity = pair.Value
-            }).OrderBy(x => x.ProductId).ToList();
+            var mergedItems = quantitiesByProduct
+                .Select(pair => new CreateOrderItemRequest
+                {
+                    ProductId = pair.Key,
+                    Quantity = pair.Value
+                })
+                .OrderBy(x => x.ProductId)
+                .ToList();
 
             foreach (var item in mergedItems)
             {
-                var product = await _productRepository.GetForUpdateAsync(session, item.ProductId, cancellationToken);
+                var product = await _productRepository
+                    .GetForUpdateAsync(session, item.ProductId, cancellationToken);
 
                 if (product is null)
                 {
@@ -123,17 +135,19 @@ public class OrderRepository
                 }
 
                 var newStockQuantity = product.StockQuantity - item.Quantity;
-                
-                await _productRepository.UpdateStockAsync(session, product.Id, newStockQuantity, cancellationToken);
 
-                await _orderItemRepository.CreateAsync(session, orderId, product.Id, item.Quantity, product.Price,
-                    cancellationToken);
+                await _productRepository.UpdateStockAsync(
+                    session, product.Id, newStockQuantity, cancellationToken);
+
+                await _orderItemRepository.CreateAsync(
+                    session, orderId, product.Id, item.Quantity, product.Price, cancellationToken);
             }
-            
-            await _idempotencyKeyRepository.SaveAsync(session, userId, idempotencyKey, orderId,  cancellationToken);
-            
+
+            await _idempotencyKeyRepository.SaveAsync(
+                session, userId, idempotencyKey, orderId, cancellationToken);
+
             await transaction.CommitAsync(cancellationToken);
-            
+
             return orderId;
         }
         catch (PostgresException ex)
@@ -141,9 +155,8 @@ public class OrderRepository
         {
             await transaction.RollbackAsync(cancellationToken);
 
-            var existingOrderId =
-                await _idempotencyKeyRepository.FindByUserAndKeyAsync(userId, idempotencyKey,
-                    cancellationToken);
+            var existingOrderId = await _idempotencyKeyRepository
+                .FindByUserAndKeyAsync(userId, idempotencyKey, cancellationToken);
 
             if (existingOrderId.HasValue)
             {
@@ -158,8 +171,11 @@ public class OrderRepository
             throw;
         }
     }
-    
-    public async Task<OrderResponse?> GetOrderByIdAsync(int orderId, int userId, CancellationToken cancellationToken)
+
+    public async Task<OrderResponse?> GetOrderByIdAsync(
+        int orderId,
+        int userId,
+        CancellationToken cancellationToken)
     {
         await using var connection =
             await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -180,8 +196,7 @@ public class OrderRepository
                            ORDER BY oi.id;
                            """;
 
-        await using var command =
-            new NpgsqlCommand(sql, connection);
+        await using var command = new NpgsqlCommand(sql, connection);
 
         command.Parameters.AddWithValue(orderId);
         command.Parameters.AddWithValue(userId);
@@ -205,8 +220,12 @@ public class OrderRepository
 
         return order;
     }
-    
-    public async Task<List<OrderResponse>> GetOrdersAsync(int userId, int page, int pageSize, CancellationToken cancellationToken)
+
+    public async Task<List<OrderResponse>> GetOrdersAsync(
+        int userId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
     {
         await using var connection =
             await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -233,10 +252,9 @@ public class OrderRepository
                            ORDER BY o.created_at DESC, oi.id;
                            """;
 
-        var offset = (page -1) * pageSize;
-        
-        await using var command =
-            new NpgsqlCommand(sql, connection);
+        var offset = (page - 1) * pageSize;
+
+        await using var command = new NpgsqlCommand(sql, connection);
 
         command.Parameters.AddWithValue(userId);
         command.Parameters.AddWithValue(pageSize);
@@ -246,7 +264,6 @@ public class OrderRepository
             await command.ExecuteReaderAsync(cancellationToken);
 
         var orders = new List<OrderResponse>();
-
         OrderResponse? currentOrder = null;
 
         while (await reader.ReadAsync(cancellationToken))
@@ -260,7 +277,7 @@ public class OrderRepository
             }
 
             var item = ReadOrderItem(reader);
-            
+
             if (item is not null)
             {
                 currentOrder.Items.Add(item);
@@ -269,8 +286,10 @@ public class OrderRepository
 
         return orders;
     }
-    
-    public async Task<int> GetOrdersCountAsync(int userId, CancellationToken cancellationToken)
+
+    public async Task<int> GetOrdersCountAsync(
+        int userId,
+        CancellationToken cancellationToken)
     {
         await using var connection =
             await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -281,8 +300,7 @@ public class OrderRepository
                            WHERE user_id = $1;
                            """;
 
-        await using var command =
-            new NpgsqlCommand(sql, connection);
+        await using var command = new NpgsqlCommand(sql, connection);
 
         command.Parameters.AddWithValue(userId);
 
@@ -290,7 +308,7 @@ public class OrderRepository
 
         return Convert.ToInt32(result);
     }
-    
+
     public async Task CancelOrderAsync(
         int orderId,
         int userId,
@@ -312,21 +330,23 @@ public class OrderRepository
             lockCommand.Parameters.AddWithValue(orderId);
             lockCommand.Parameters.AddWithValue(userId);
 
-            var status = (string?)await lockCommand.ExecuteScalarAsync(ct);
+            var statusString = (string?)await lockCommand.ExecuteScalarAsync(ct);
 
-            if (status is null)
+            if (statusString is null)
             {
                 throw new OrderNotFoundException(orderId);
             }
 
-            if (status == "cancelled")
+            var status = OrderStatusConverter.FromDbString(statusString);
+
+            if (status == OrderStatus.Cancelled)
             {
-                return;   // ← idempotent: уже отменён, выходим без значения
+                return;
             }
 
-            if (status != "pending")
+            if (status != OrderStatus.Pending)
             {
-                throw new OrderCannotBeCancelledException(orderId, status);
+                throw new OrderCannotBeCancelledException(orderId, statusString);
             }
 
             var items = await _orderItemRepository
@@ -348,13 +368,12 @@ public class OrderRepository
                     session, product.Id, newStock, ct);
             }
 
-            await UpdateStatusAsync(session, orderId, "cancelled", ct);
-        
-            // ← БЕЗ return userId; — лямбда просто завершается
+            await UpdateStatusAsync(session, orderId, OrderStatus.Cancelled, ct);
         }, cancellationToken);
     }
-    
-    public async Task<List<int>> GetExpiredPendingOrderIdsAsync(CancellationToken cancellationToken)
+
+    public async Task<List<int>> GetExpiredPendingOrderIdsAsync(
+        CancellationToken cancellationToken)
     {
         await using var connection =
             await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -362,14 +381,14 @@ public class OrderRepository
         const string sql = """
                            SELECT id
                            FROM orders
-                           WHERE status = 'pending'
-                             AND created_at <= NOW() - make_interval(mins => $1)
+                           WHERE status = $1
+                             AND created_at <= NOW() - make_interval(mins => $2)
                            ORDER BY id;
                            """;
 
-        await using var command =
-            new NpgsqlCommand(sql, connection);
-        
+        await using var command = new NpgsqlCommand(sql, connection);
+
+        command.Parameters.AddWithValue(OrderStatus.Pending.ToDbString());
         command.Parameters.AddWithValue(PendingOrderTimeoutMinutes);
 
         await using var reader =
@@ -384,8 +403,10 @@ public class OrderRepository
 
         return orderIds;
     }
-    
-    public async Task<int?> CancelExpiredPendingOrderAsync(int orderId, CancellationToken cancellationToken)
+
+    public async Task<int?> CancelExpiredPendingOrderAsync(
+        int orderId,
+        CancellationToken cancellationToken)
     {
         return await ExecuteInTransactionAsync<int?>(async (session, ct) =>
         {
@@ -409,12 +430,14 @@ public class OrderRepository
             }
 
             var userId = reader.GetInt32(0);
-            var status = reader.GetString(1);
+            var statusString = reader.GetString(1);
             var createdAt = reader.GetFieldValue<DateTime>(2);
 
             await reader.CloseAsync();
 
-            if (status != "pending")
+            var status = OrderStatusConverter.FromDbString(statusString);
+
+            if (status != OrderStatus.Pending)
             {
                 return null;
             }
@@ -445,20 +468,19 @@ public class OrderRepository
                     session, product.Id, newStock, ct);
             }
 
-            await UpdateStatusAsync(session, orderId, "cancelled", ct);
+            await UpdateStatusAsync(session, orderId, OrderStatus.Cancelled, ct);
 
             return userId;
         }, cancellationToken);
     }
-    
-    
+
     private static OrderResponse ReadOrder(NpgsqlDataReader reader)
     {
         return new OrderResponse
         {
             Id = reader.GetInt32(0),
             UserId = reader.GetInt32(1),
-            Status = reader.GetString(2),
+            Status = OrderStatusConverter.FromDbString(reader.GetString(2)),
             CreatedAt = reader.GetDateTime(3)
         };
     }

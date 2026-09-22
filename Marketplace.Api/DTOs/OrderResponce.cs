@@ -1,16 +1,14 @@
+using Marketplace.Api.Models;
+
 namespace Marketplace.Api.DTOs;
 
 public record OrderResponse
 {
     public int Id { get; init; }
-
     public int UserId { get; init; }
-
-    public string Status { get; init; } = string.Empty;
-
+    public OrderStatus Status { get; init; }
     public DateTime CreatedAt { get; init; }
-
-    public List<OrderItemResponse> Items { get; } = new();
+    public List<OrderItemResponse> Items { get; init; } = new();
 }
 
 public record OrderItemResponse

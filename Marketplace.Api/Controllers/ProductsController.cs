@@ -24,35 +24,26 @@ public class ProductsController : ControllerBase
     {
         if (page < 1)
         {
-            return BadRequest(new
-            {
-                message = "Page must be greater than or equal to 1."
-            });
+            return BadRequest(new { message = "Page must be greater than or equal to 1." });
         }
 
         if (pageSize < 1 || pageSize > 100)
         {
-            return BadRequest(new
-            {
-                message = "PageSize must be between 1 and 100."
-            });
+            return BadRequest(new { message = "PageSize must be between 1 and 100." });
         }
 
-        var result = await _productService
-            .GetListAsync(page, pageSize, cancellationToken);
-
+        var result = await _productService.GetListAsync(page, pageSize, cancellationToken);
         return Ok(result);
     }
 
     [HttpGet("{id:int}")]
     public async Task<IActionResult> GetById(int id, CancellationToken cancellationToken)
     {
-        var product = await _productService
-            .GetByIdAsync(id, cancellationToken);
+        var product = await _productService.GetByIdAsync(id, cancellationToken);
 
         if (product is null)
         {
-            return NotFound(new { message = $"Product {id} not found." });
+            return NotFound();
         }
 
         return Ok(product);
@@ -63,26 +54,9 @@ public class ProductsController : ControllerBase
         CreateProductRequest request,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var product = new Product(
-                0,
-                request.Name,
-                request.Price,
-                request.StockQuantity);
-
-            var created = await _productService
-                .CreateAsync(product, cancellationToken);
-
-            return CreatedAtAction(
-                nameof(GetById),
-                new { id = created.Id },
-                created);
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { message = ex.Message });
-        }
+        var product = new Product(0, request.Name, request.Price, request.StockQuantity);
+        var created = await _productService.CreateAsync(product, cancellationToken);
+        return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
     }
 
     [HttpPut("{id:int}")]
@@ -91,35 +65,14 @@ public class ProductsController : ControllerBase
         UpdateProductRequest request,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var updated = await _productService
-                .UpdateAsync(id, request, cancellationToken);
-
-            if (!updated)
-            {
-                return NotFound(new { message = $"Product {id} not found." });
-            }
-
-            return NoContent();
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { message = ex.Message });
-        }
+        await _productService.UpdateAsync(id, request, cancellationToken);
+        return NoContent();
     }
 
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
     {
-        var deleted = await _productService
-            .DeleteAsync(id, cancellationToken);
-
-        if (!deleted)
-        {
-            return NotFound(new { message = $"Product {id} not found." });
-        }
-
+        await _productService.DeleteAsync(id, cancellationToken);
         return NoContent();
     }
 }

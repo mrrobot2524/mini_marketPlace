@@ -1,4 +1,5 @@
 using Marketplace.Api.DTOs;
+using Marketplace.Api.Exceptions;
 using Marketplace.Api.Models;
 using Marketplace.Api.Repositories;
 
@@ -65,7 +66,7 @@ public class ProductService
         };
     }
 
-    public async Task<bool> UpdateAsync(
+    public async Task UpdateAsync(
         int productId,
         UpdateProductRequest request,
         CancellationToken cancellationToken)
@@ -85,18 +86,26 @@ public class ProductService
             throw new ArgumentException("Stock quantity cannot be negative.");
         }
 
-        return await _productRepository.UpdateAsync(
+        var updated = await _productRepository.UpdateAsync(
             productId,
             request.Name,
             request.Price,
             request.StockQuantity,
             cancellationToken);
+
+        if (!updated)
+        {
+            throw new ProductNotFoundException(productId);
+        }
     }
 
-    public async Task<bool> DeleteAsync(
-        int productId,
-        CancellationToken cancellationToken)
+    public async Task DeleteAsync(int productId, CancellationToken cancellationToken)
     {
-        return await _productRepository.DeleteAsync(productId, cancellationToken);
+        var deleted = await _productRepository.DeleteAsync(productId, cancellationToken);
+
+        if (!deleted)
+        {
+            throw new ProductNotFoundException(productId);
+        }
     }
 }

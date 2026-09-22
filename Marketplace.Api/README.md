@@ -394,17 +394,6 @@ docker compose up --build -d
 > docker compose up --build -d
 > ```
 
----
-
-## 🧪 Testlar
-
-> Hozircha to'xtatilgan — yakunlanmagan. Loyihaga qo'shilgan testlar:
-> `Marketplace.Tests/` (xUnit + Testcontainers).
-
-Testlarni ishga tushirish:
-```bash
-dotnet test
-```
 
 ---
 
@@ -419,12 +408,6 @@ Loyiha bosqichma-bosqich rivojlantirildi:
 5. **Global Exception Handler** — controller'lardan try/catch ni olib tashlash
 6. **Options Pattern** — strongly-typed configuration + startup validation
 7. **Health Checks** — PostgreSQL + Redis monitoring
-
----
-
-## 📞 Aloqa
-
-Savol yoki takliflar bo'lsa — issue oching.
 
 ---
 

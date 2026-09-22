@@ -264,30 +264,7 @@ public class ProductRepository
         return rowsAffected > 0;
     }
 
-    private async Task ExecuteInTransactionAsync(
-        Func<DbSession, CancellationToken, Task> action,
-        CancellationToken cancellationToken)
-    {
-        await using var connection =
-            await _dataSource.OpenConnectionAsync(cancellationToken);
-
-        await using var transaction =
-            await connection.BeginTransactionAsync(cancellationToken);
-
-        var session = new DbSession(connection, transaction);
-
-        try
-        {
-            await action(session, cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-        }
-        catch
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            throw;
-        }
-    }
-
+    // ✅ ОСТАЁТСЯ ТОЛЬКО GENERIC overload
     private async Task<T> ExecuteInTransactionAsync<T>(
         Func<DbSession, CancellationToken, Task<T>> action,
         CancellationToken cancellationToken)

@@ -2,39 +2,78 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using Marketplace.Api.Exceptions;
+using Marketplace.Api.Options;
 using Marketplace.Api.Repositories;
 using Marketplace.Api.Services;
+using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 using Npgsql;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
+
 builder.Services.AddControllers();
 
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
 
-var jwtKey = builder.Configuration["Jwt:Key"] ?? throw new InvalidOperationException("Jwt:Key is not configured in appsettings.json.");
+// === Options Pattern ===
+builder.Services.Configure<JwtOptions>(
+    builder.Configuration.GetSection(JwtOptions.SectionName));
+
+builder.Services.AddSingleton<IValidateOptions<JwtOptions>, JwtOptionsValidator>();
+
+builder.Services.Configure<PostgresOptions>(
+    builder.Configuration.GetSection(PostgresOptions.SectionName));
+
+builder.Services.Configure<RedisOptions>(
+    builder.Configuration.GetSection(RedisOptions.SectionName));
+
+// === JWT ===
+var jwtOptions = builder.Configuration
+    .GetSection(JwtOptions.SectionName)
+    .Get<JwtOptions>()
+    ?? throw new InvalidOperationException("Jwt section is not configured.");
+
+if (string.IsNullOrWhiteSpace(jwtOptions.Key))
+{
+    throw new InvalidOperationException("Jwt:Key is not configured.");
+}
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.TokenValidationParameters = new TokenValidationParameters
         {
-            ValidateIssuer = false,
-            ValidateAudience = false,
+            ValidateIssuer = !string.IsNullOrEmpty(jwtOptions.Issuer),
+            ValidIssuer = jwtOptions.Issuer,
+
+            ValidateAudience = !string.IsNullOrEmpty(jwtOptions.Audience),
+            ValidAudience = jwtOptions.Audience,
+
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
 
             IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(jwtKey))
+                Encoding.UTF8.GetBytes(jwtOptions.Key))
         };
     });
 
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-builder.Services.AddSingleton(NpgsqlDataSource.Create(connectionString!));
+// === PostgreSQL ===
+var postgresOptions = builder.Configuration
+    .GetSection(PostgresOptions.SectionName)
+    .Get<PostgresOptions>()
+    ?? throw new InvalidOperationException("ConnectionStrings section is not configured.");
 
+if (string.IsNullOrWhiteSpace(postgresOptions.DefaultConnection))
+{
+    throw new InvalidOperationException("ConnectionStrings:DefaultConnection is not configured.");
+}
+
+builder.Services.AddSingleton(NpgsqlDataSource.Create(postgresOptions.DefaultConnection));
+
+// === Swagger ===
 builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddSwaggerGen(options =>
@@ -55,6 +94,7 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+// === Repositories & Services ===
 builder.Services.AddScoped<IdempotencyKeyRepository>();
 builder.Services.AddScoped<OrderItemRepository>();
 builder.Services.AddScoped<ProductRepository>();
@@ -64,16 +104,25 @@ builder.Services.AddScoped<OrderService>();
 
 builder.Services.AddSingleton<RedisCacheService>();
 
-var redisConnection =
-    builder.Configuration["Redis:ConnectionString"]
-    ?? "localhost:6379";
+// === Redis ===
+var redisOptions = builder.Configuration
+    .GetSection(RedisOptions.SectionName)
+    .Get<RedisOptions>()
+    ?? throw new InvalidOperationException("Redis section is not configured.");
+
+if (string.IsNullOrWhiteSpace(redisOptions.ConnectionString))
+{
+    throw new InvalidOperationException("Redis:ConnectionString is not configured.");
+}
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(
-    ConnectionMultiplexer.Connect(redisConnection));
+    ConnectionMultiplexer.Connect(redisOptions.ConnectionString));
 
 builder.Services.AddHostedService<PendingOrderCancellationService>();
 
 var app = builder.Build();
+_ = app.Services.GetRequiredService<IOptions<JwtOptions>>().Value;
+app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment())
 {
@@ -81,12 +130,9 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
-
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-
-app.UseExceptionHandler();
 
 app.Run();

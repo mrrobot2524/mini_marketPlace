@@ -46,6 +46,7 @@ services:
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Redis__ConnectionString: "${REDIS_CONNECTION_STRING}"
       Jwt__Key: "${JWT_KEY}"
+      Jwt__ExpirationHours: "${JWT_EXPIRATION_HOURS}"
     depends_on:
       postgres:
         condition: service_healthy
